@@ -1,0 +1,9 @@
+{
+  "name": "com.freeride.native_host",
+  "description": "FreeRide Native Messaging Host",
+  "path": "/home/zhaozifeng/cc-workspace/FreeRide/native/native_host.py",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://EXTENSION_ID_HERE/"
+  ]
+}

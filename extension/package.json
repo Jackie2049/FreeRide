@@ -1,0 +1,16 @@
+{
+  "name": "freeride-extension",
+  "version": "0.1.0",
+  "description": "FreeRide Chrome Extension",
+  "scripts": {
+    "build": "vite build && npm run copy-to-desktop",
+    "copy-to-desktop": "rm -rf /mnt/c/Users/73523/Desktop/FreeRide && mkdir -p /mnt/c/Users/73523/Desktop/FreeRide && cp manifest.json /mnt/c/Users/73523/Desktop/FreeRide/ && cp -r dist /mnt/c/Users/73523/Desktop/FreeRide/ && echo 'Copied to Windows Desktop/FreeRide'",
+    "dev": "vite build --watch",
+    "build:reload": "npm run build && curl -s -X POST http://127.0.0.1:8765/reload"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.268",
+    "typescript": "^5.4.0",
+    "vite": "^5.2.0"
+  }
+}
