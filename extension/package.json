@@ -1,6 +1,6 @@
 {
   "name": "freeride-extension",
-  "version": "0.2.0",
+  "version": "0.4.0",
   "description": "FreeRide Chrome Extension",
   "scripts": {
     "build": "vite build && npm run copy-to-desktop",

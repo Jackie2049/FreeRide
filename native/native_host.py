@@ -11,6 +11,10 @@ Architecture:
 4. Server forwards requests to Extension via WebSocket
 5. Extension sends responses back via WebSocket
 
+Supports:
+- Custom HTTP API (/ask, /status, /switch_mode) for CLI
+- Anthropic Messages API (/v1/messages, /v1/models) for Claude Code
+
 Usage:
     python3 native_host.py          # Start server
     python3 native_host.py --test   # Test mode
@@ -20,7 +24,9 @@ import sys
 import json
 import asyncio
 import argparse
-from typing import Dict, Any, Optional
+import uuid
+import re
+from typing import Dict, Any, Optional, List, Union
 from aiohttp import web
 import aiohttp
 
@@ -54,6 +60,207 @@ pending_requests: Dict[str, asyncio.Future] = {}
 def log(message: str):
     """Log to stderr"""
     print(f"[FreeRide] {message}", file=sys.stderr, flush=True)
+
+
+# =====================
+# Anthropic API Helpers
+# =====================
+
+def model_to_mode(model: str) -> str:
+    """Map Claude model name to Doubao mode
+
+    Mapping rule: sonnet/opus → think, haiku → quick
+    """
+    model_lower = model.lower()
+    if 'opus' in model_lower or 'sonnet' in model_lower:
+        return 'think'
+    else:  # haiku or other
+        return 'quick'
+
+
+def messages_to_prompt(messages: List[Dict], system: str = None) -> str:
+    """Convert Anthropic messages format to a single prompt"""
+    parts = []
+    if system:
+        parts.append(f"System: {system}")
+    for msg in messages:
+        role = msg.get('role', 'user').upper()
+        content = msg.get('content', '')
+        if isinstance(content, list):
+            # Handle multimodal content - extract text
+            text_parts = []
+            for c in content:
+                if isinstance(c, dict) and c.get('type') == 'text':
+                    text_parts.append(c.get('text', ''))
+                elif isinstance(c, str):
+                    text_parts.append(c)
+            content = '\n'.join(text_parts)
+        parts.append(f"{role}: {content}")
+    return '\n\n'.join(parts)
+
+
+def create_anthropic_response(content: str, model: str) -> Dict:
+    """Create Anthropic-style response"""
+    return {
+        'id': f'msg_{uuid.uuid4().hex[:24]}',
+        'type': 'message',
+        'role': 'assistant',
+        'content': [
+            {
+                'type': 'text',
+                'text': content
+            }
+        ],
+        'model': model,
+        'stop_reason': 'end_turn',
+        'stop_sequence': None,
+        'usage': {
+            'input_tokens': 0,
+            'output_tokens': 0
+        }
+    }
+
+
+def create_anthropic_error(error_type: str, message: str, status: int = 400) -> Dict:
+    """Create Anthropic-style error response"""
+    return {
+        'type': 'error',
+        'error': {
+            'type': error_type,
+            'message': message
+        }
+    }
+
+
+async def handle_http_status(request: web.Request) -> web.Response:
+    """Handle GET /status"""
+    return web.json_response({
+        'status': 'ok',
+        'message': 'FreeRide Bridge Server is running',
+        'websocket_clients': len(websocket_clients),
+        'pending_requests': len(pending_requests)
+    })
+
+
+# =====================
+# Anthropic API Handlers
+# =====================
+
+async def handle_http_v1_models(request: web.Request) -> web.Response:
+    """Handle GET /v1/models - return available models"""
+    return web.json_response({
+        'object': 'list',
+        'data': [
+            {
+                'id': 'claude-sonnet-4-20250514',
+                'object': 'model',
+                'created': 1700000000,
+                'owned_by': 'freeride'
+            },
+            {
+                'id': 'claude-opus-4-20250514',
+                'object': 'model',
+                'created': 1700000000,
+                'owned_by': 'freeride'
+            },
+            {
+                'id': 'claude-haiku-3-5-20241022',
+                'object': 'model',
+                'created': 1700000000,
+                'owned_by': 'freeride'
+            }
+        ]
+    })
+
+
+async def handle_http_v1_messages(request: web.Request) -> web.Response:
+    """Handle POST /v1/messages - Anthropic Messages API"""
+    try:
+        data = await request.json()
+    except json.JSONDecodeError:
+        return web.json_response(
+            create_anthropic_error('invalid_request_error', 'Invalid JSON'),
+            status=400
+        )
+
+    # Extract Anthropic request fields
+    model = data.get('model', 'claude-sonnet-4-20250514')
+    messages = data.get('messages', [])
+    system = data.get('system')
+    max_tokens = data.get('max_tokens', 4096)
+    stream = data.get('stream', False)
+
+    # Validate required fields
+    if not messages:
+        return web.json_response(
+            create_anthropic_error('invalid_request_error', 'messages is required'),
+            status=400
+        )
+
+    if not websocket_clients:
+        return web.json_response(
+            create_anthropic_error('api_error', 'Chrome extension not connected. Please ensure the extension is loaded and Doubao page is open.'),
+            status=503
+        )
+
+    # Convert to internal format
+    prompt = messages_to_prompt(messages, system)
+    mode = model_to_mode(model)
+
+    log(f"[Anthropic API] Request: model={model}, mode={mode}, messages={len(messages)}, stream={stream}")
+
+    # Generate request ID
+    request_id = str(uuid.uuid4())
+
+    # Create future for response
+    future = asyncio.get_event_loop().create_future()
+    pending_requests[request_id] = future
+
+    try:
+        # Send to Chrome Extension via WebSocket
+        message = {
+            'type': 'FREERIDE_ASK',
+            'requestId': request_id,
+            'payload': {
+                'prompt': prompt,
+                'timeout': 300,
+                'includeThinking': False,
+                'mode': mode
+            }
+        }
+
+        for ws in websocket_clients:
+            await ws.send_json(message)
+
+        log(f"[Anthropic API] Request {request_id} sent to extension")
+
+        # Wait for response
+        try:
+            response = await asyncio.wait_for(future, timeout=320)
+            log(f"[Anthropic API] Request {request_id} completed")
+
+            # Extract content from response
+            if response.get('success'):
+                content = response.get('content', '')
+            else:
+                error_msg = response.get('error', 'Unknown error')
+                return web.json_response(
+                    create_anthropic_error('api_error', error_msg),
+                    status=500
+                )
+
+            # Return Anthropic-style response
+            return web.json_response(create_anthropic_response(content, model))
+
+        except asyncio.TimeoutError:
+            log(f"[Anthropic API] Request {request_id} timeout")
+            return web.json_response(
+                create_anthropic_error('api_error', 'Response timeout'),
+                status=504
+            )
+
+    finally:
+        pending_requests.pop(request_id, None)
 
 
 async def handle_http_status(request: web.Request) -> web.Response:
@@ -330,6 +537,11 @@ def create_app() -> web.Application:
     app.router.add_post('/reload', handle_http_reload)
     app.router.add_options('/reload', handle_http_options)
     app.router.add_get('/ws', handle_websocket)
+
+    # Anthropic API routes
+    app.router.add_get('/v1/models', handle_http_v1_models)
+    app.router.add_post('/v1/messages', handle_http_v1_messages)
+    app.router.add_options('/v1/messages', handle_http_options)
 
     return app
 
