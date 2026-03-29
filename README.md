@@ -212,6 +212,12 @@ python3 tests/test_integration.py -v
 
 ## 更新日志
 
+### v0.3.0
+- 新增: GitHub Actions 自动发布流程
+- 新增: 单元测试和集成测试
+- 优化: 版本号同步 (manifest/package/README)
+- 改进: 安装方式简化，通过 Release 下载 ZIP 包
+
 ### v0.2.0
 - 新增: 三种回答模式支持 (quick/think/expert)
 - 新增: 思考内容捕获功能 (--include-thinking)
