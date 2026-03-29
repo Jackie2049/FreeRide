@@ -115,6 +115,117 @@ Token消耗:
 - 通过FreeRide: 只消耗调度和整合的 ~200 tokens
 ```
 
+---
+
+## 给 AI Coding Agents 的使用指南
+
+> 如果你是一个 AI Coding Agent（如 Claude Code、Cursor、Cline 等），这个板块帮助你快速掌握如何使用 FreeRide。
+
+### 什么时候应该使用 FreeRide？
+
+**✅ 适合使用 FreeRide 的场景：**
+
+| 场景 | 示例 |
+|------|------|
+| 复杂代码分析 | "分析这个项目的架构和设计模式" |
+| 算法复杂度分析 | "分析这个排序算法的时间复杂度" |
+| 知识问答 | "解释一下 Redis 分布式锁的实现原理" |
+| 文档理解 | "总结这篇论文的核心观点" |
+| 多轮调研 | "梳理某位学者的完整履历" |
+| 需要深度思考的问题 | 使用 `--mode think` 获取推理过程 |
+
+**❌ 不适合使用 FreeRide 的场景：**
+
+- 需要修改文件、执行命令的任务（FreeRide 只能问答）
+- 需要访问本地代码库的任务
+- 简单的确认性问题（直接回答更高效）
+- 涉及敏感/私密信息的问题
+
+### 模式选择指南
+
+```
+问题复杂度判断：
+
+简单问题（直接回答）
+    ↓
+中等复杂度 → freeride ask "..." --mode quick
+    ↓
+需要分析/推理 → freeride ask "..." --mode think
+    ↓
+研究级/学术问题 → freeride ask "..." --mode expert
+```
+
+### 前置条件检查
+
+使用前确保：
+1. Native Host 正在运行：`python3 native/native_host.py`
+2. Chrome 扩展已加载
+3. 豆包页面已打开（https://www.doubao.com/）
+
+检查命令：
+```bash
+freeride status
+```
+
+### 完整调用示例
+
+```bash
+# 示例1：代码分析
+freeride ask "分析以下代码的时间复杂度和空间复杂度：
+def quicksort(arr):
+    if len(arr) <= 1:
+        return arr
+    pivot = arr[len(arr) // 2]
+    left = [x for x in arr if x < pivot]
+    middle = [x for x in arr if x == pivot]
+    right = [x for x in arr if x > pivot]
+    return quicksort(left) + middle + quicksort(right)
+" --mode think
+
+# 示例2：知识问答（含思考过程）
+freeride ask "解释 Redis 的持久化机制 RDB 和 AOF 的区别" --mode think --include-thinking
+
+# 示例3：多轮调研
+freeride ask "梳理 Python 异步编程的发展历史" --mode expert
+```
+
+### 工作流集成
+
+```
+用户请求
+    ↓
+判断任务类型
+    ↓
+┌─────────────────────────────────┐
+│ 需要重计算/知识问答？            │
+│         ↓ 是                    │
+│ 调用 FreeRide                   │
+│ 等待响应                        │
+│ 整合结果                        │
+└─────────────────────────────────┘
+    ↓
+需要文件操作/命令执行？
+    ↓ 是
+自己处理
+    ↓
+返回给用户
+```
+
+### 最佳实践
+
+1. **Token 节省策略**：把大段分析任务委托给 FreeRide，你只做调度和整合
+2. **多轮调研**：连续调用 FreeRide，逐步深入
+3. **分工明确**：FreeRide 负责问答，你负责文件操作和命令执行
+
+### 故障排除速查
+
+| 问题 | 解决方案 |
+|------|----------|
+| 连接失败 | `freeride status` 检查状态 |
+| 扩展未连接 | 刷新扩展和豆包页面 |
+| 超时 | 增加 `--timeout` 参数 |
+| 思考内容未返回 | 添加 `--include-thinking` 参数 |
+
 ## 目录结构
 
 ```
