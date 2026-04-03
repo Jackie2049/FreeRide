@@ -78,16 +78,57 @@ def model_to_mode(model: str) -> str:
         return 'quick'
 
 
-def messages_to_prompt(messages: List[Dict], system: str = None) -> str:
-    """Convert Anthropic messages format to a single prompt"""
-    parts = []
-    if system:
-        parts.append(f"System: {system}")
+# =====================
+# Prompt Adaptation Layer
+# =====================
+
+# Brand name replacements: Claude/Anthropic → Doubao/ByteDance
+BRAND_REPLACEMENTS = [
+    # Full names first (longer matches first)
+    (r'Claude Code', '豆包'),
+    (r'Claude\s+Opus', '豆包Pro'),
+    (r'Claude\s+Sonnet', '豆包'),
+    (r'Claude\s+Haiku', '豆包Lite'),
+    (r'Claude-Opus', '豆包Pro'),
+    (r'Claude-Sonnet', '豆包'),
+    (r'Claude-Haiku', '豆包Lite'),
+    (r'claude-opus', 'doubao-pro'),
+    (r'claude-sonnet', 'doubao'),
+    (r'claude-haiku', 'doubao-lite'),
+    (r'Anthropic', '字节跳动'),
+    (r'anthropic', 'bytedance'),
+    (r'Claude', '豆包'),
+    (r'claude', '豆包'),
+]
+
+
+def replace_brand_names(text: str) -> str:
+    """Replace all Claude/Anthropic brand names with Doubao/ByteDance equivalents."""
+    if not text or not isinstance(text, str):
+        return text or ''
+    for pattern, replacement in BRAND_REPLACEMENTS:
+        text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
+    return text
+
+
+def adapt_prompt(messages: List[Dict], system: str = None) -> str:
+    """
+    Adapt Claude Code's structured prompt into a natural format.
+
+    Claude Code sends prompts with explicit role labels:
+    - SYSTEM: long instructions about tools, rules, etc.
+    - USER/ASSISTANT: conversation history
+
+    This adapter transforms them into natural language to avoid bot detection.
+    The transformation is purely rule-based (no LLM calls).
+    """
+
+    # Step 1: Extract all content and apply brand name replacements
+    extracted = []
     for msg in messages:
-        role = msg.get('role', 'user').upper()
+        role = msg.get('role', 'user')
         content = msg.get('content', '')
         if isinstance(content, list):
-            # Handle multimodal content - extract text
             text_parts = []
             for c in content:
                 if isinstance(c, dict) and c.get('type') == 'text':
@@ -95,8 +136,118 @@ def messages_to_prompt(messages: List[Dict], system: str = None) -> str:
                 elif isinstance(c, str):
                     text_parts.append(c)
             content = '\n'.join(text_parts)
-        parts.append(f"{role}: {content}")
+        # Apply brand name replacement
+        content = replace_brand_names(content)
+        if content.strip():
+            extracted.append((role, content.strip()))
+
+    # Also replace brand names in system prompt
+    if system:
+        system = replace_brand_names(system)
+
+    if not extracted:
+        return ''
+
+    # Step 2: Classify the request type
+    is_simple_query = len(extracted) == 1 and extracted[0][0] == 'user'
+    has_context = system is not None and len(system) > 50
+    is_multi_turn = len(extracted) > 1
+
+    # Step 3: Apply transformation strategy
+
+    # Strategy A: Simple single query - send as-is
+    if is_simple_query and not has_context:
+        return extracted[0][1]
+
+    # Strategy B: Query with context (system prompt)
+    # Extract task from system and prepend naturally
+    if is_simple_query and has_context:
+        task_summary = extract_task_from_system(system)
+        user_query = extracted[0][1]
+
+        if task_summary:
+            return f"{task_summary}\n\n{user_query}"
+        return user_query
+
+    # Strategy C: Multi-turn conversation
+    # Format as natural dialogue
+    return format_multi_turn(extracted, system)
+
+
+def extract_task_from_system(system: str) -> str:
+    """
+    Extract key task/role from system prompt.
+    Returns a natural language summary or empty string.
+    """
+    if not system or len(system) < 20:
+        return ''
+
+    # Common patterns in Claude Code system prompts
+    task_patterns = [
+        r'You are (?:an? )?([^.\n]+)',
+        r'Your (?:task|role|goal) (?:is|:)\s*([^.\n]+)',
+        r'Help (?:the )?user (?:to )?([^.\n]+)',
+    ]
+
+    for pattern in task_patterns:
+        match = re.search(pattern, system, re.IGNORECASE)
+        if match:
+            role = match.group(1).strip()
+            # Make it natural
+            if len(role) > 100:
+                role = role[:100] + '...'
+            return f"(我是{role})"
+
+    return ''
+
+
+def format_multi_turn(messages: List[tuple], system: str = None) -> str:
+    """
+    Format multi-turn conversation into natural dialogue.
+
+    Instead of:
+        USER: xxx
+        ASSISTANT: xxx
+        USER: xxx
+
+    Use:
+        xxx
+
+        [我之前的回答]
+        xxx
+
+        [继续]
+        xxx
+    """
+    parts = []
+
+    # Handle system - skip if too long (likely tool definitions)
+    if system:
+        task = extract_task_from_system(system)
+        if task:
+            parts.append(task)
+
+    for i, (role, content) in enumerate(messages):
+        if role == 'user':
+            if i == 0:
+                # First user message - send directly
+                parts.append(content)
+            else:
+                # Subsequent user messages - add continuation marker
+                parts.append(f"[继续]\n{content}")
+        else:
+            # Assistant message - format as previous response
+            # Truncate if too long
+            if len(content) > 500:
+                content = content[:500] + '...(省略)'
+            parts.append(f"[我之前的回答]\n{content}")
+
     return '\n\n'.join(parts)
+
+
+def messages_to_prompt(messages: List[Dict], system: str = None) -> str:
+    """Entry point for prompt adaptation"""
+    return adapt_prompt(messages, system)
 
 
 def create_anthropic_response(content: str, model: str) -> Dict:
@@ -249,8 +400,11 @@ async def handle_http_v1_messages(request: web.Request) -> web.Response:
                     status=500
                 )
 
-            # Return Anthropic-style response
-            return web.json_response(create_anthropic_response(content, model))
+            # Return based on stream mode
+            if stream:
+                return await create_streaming_response(request, content, model)
+            else:
+                return web.json_response(create_anthropic_response(content, model))
 
         except asyncio.TimeoutError:
             log(f"[Anthropic API] Request {request_id} timeout")
@@ -261,6 +415,76 @@ async def handle_http_v1_messages(request: web.Request) -> web.Response:
 
     finally:
         pending_requests.pop(request_id, None)
+
+
+async def create_streaming_response(request: web.Request, content: str, model: str):
+    """Create SSE streaming response for Anthropic API"""
+    response = web.StreamResponse()
+    response.content_type = 'text/event-stream'
+    response.headers['Cache-Control'] = 'no-cache'
+    response.headers['Connection'] = 'keep-alive'
+    response.headers['Access-Control-Allow-Origin'] = '*'
+    await response.prepare(request)
+
+    msg_id = f'msg_{uuid.uuid4().hex[:24]}'
+
+    async def send_event(event: str, data: dict):
+        """Send a single SSE event"""
+        await response.write(f'event: {event}\n'.encode())
+        await response.write(f'data: {json.dumps(data)}\n\n'.encode())
+
+    # 1. message_start
+    await send_event('message_start', {
+        'type': 'message_start',
+        'message': {
+            'id': msg_id,
+            'type': 'message',
+            'role': 'assistant',
+            'content': [],
+            'model': model,
+            'stop_reason': None,
+            'usage': {'input_tokens': 0, 'output_tokens': 0}
+        }
+    })
+
+    # 2. content_block_start
+    await send_event('content_block_start', {
+        'type': 'content_block_start',
+        'index': 0,
+        'content_block': {'type': 'text', 'text': ''}
+    })
+
+    # 3. Pseudo-streaming: send content in chunks
+    chunk_size = 15  # characters per chunk
+    for i in range(0, len(content), chunk_size):
+        chunk = content[i:i + chunk_size]
+        await send_event('content_block_delta', {
+            'type': 'content_block_delta',
+            'index': 0,
+            'delta': {'type': 'text_delta', 'text': chunk}
+        })
+        await asyncio.sleep(0.02)  # Small delay for realistic streaming effect
+
+    # 4. content_block_stop
+    await send_event('content_block_stop', {
+        'type': 'content_block_stop',
+        'index': 0
+    })
+
+    # 5. message_delta
+    await send_event('message_delta', {
+        'type': 'message_delta',
+        'delta': {'stop_reason': 'end_turn', 'stop_sequence': None},
+        'usage': {'output_tokens': len(content) // 4}  # Rough estimate
+    })
+
+    # 6. message_stop
+    await send_event('message_stop', {
+        'type': 'message_stop'
+    })
+
+    await response.write_eof()
+    return response
 
 
 async def handle_http_status(request: web.Request) -> web.Response:

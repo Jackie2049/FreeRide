@@ -402,14 +402,14 @@ async function waitForResponse(timeout: number, contentBefore: string): Promise<
     let lastThinkingContent = '';
     let capturedThinkingContent = '';  // 捕获的完整思考内容
     let stableCount = 0;
-    const stableThreshold = 3;
+    const stableThreshold = 5;
     let newContentDetected = false;
     let thinkingPhaseComplete = false;
 
     log('Waiting for response...');
     log(`Content before: "${contentBefore.substring(0, 50)}..."`);
 
-    const checkInterval = setInterval(() => {
+    const checkInterval = setInterval(() => {  // 200ms interval for faster response
       const elapsed = Date.now() - startTime;
 
       // Timeout is just safety net - return what we have
@@ -491,7 +491,7 @@ async function waitForResponse(timeout: number, contentBefore: string): Promise<
         lastAnswerContent = currentAnswerContent;
         log(`Answer changed, new length: ${currentAnswerContent.length}`);
       }
-    }, 1000);
+    }, 100);  // 100ms interval for fast response
   });
 }
 
